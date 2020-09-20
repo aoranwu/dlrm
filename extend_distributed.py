@@ -25,10 +25,13 @@ def env2int(env_list, default = -1):
         if val >= 0: return val
     return default
 
+# What is slice for?
 def get_my_slice(n):
     k, m = divmod(n, my_size)
     return slice(my_rank * k + min(my_rank, m), (my_rank+1) * k + min(my_rank+1, m), 1)
 
+
+# What is split?
 def get_split_lengths(n):
     k, m = divmod(n, my_size)
     if m == 0:
@@ -50,6 +53,7 @@ def init_distributed(rank = -1, size = -1, use_gpu = False, backend=''):
 
     # guess MPI ranks from env (works for IMPI, OMPI and MVAPICH2)
     num_mpi_ranks = env2int(['PMI_SIZE', 'OMPI_COMM_WORLD_SIZE', 'MV2_COMM_WORLD_SIZE', 'WORLD_SIZE'])
+    # if WORLD_SIZE is set, use nccl
     if backend == '' and num_mpi_ranks > 1:
         if torch_ccl and env2int(['CCL_WORKER_COUNT']) > 0:
             backend = 'ccl'
@@ -60,9 +64,12 @@ def init_distributed(rank = -1, size = -1, use_gpu = False, backend=''):
         else:
             print("WARNING: MPI multi-process launch detected but PyTorch MPI backend not available.")
             backend = 'gloo'
-
+    
+    # can also explicitly specify backend in the init function
+    # should be nccl, may also be gloo?
     if backend != '':
         #guess Rank and size
+        # from env variable
         if rank == -1:
             rank = env2int(['PMI_RANK', 'OMPI_COMM_WORLD_RANK', 'MV2_COMM_WORLD_RANK', 'RANK'], 0)
         if size == -1:
@@ -107,6 +114,7 @@ def init_distributed(rank = -1, size = -1, use_gpu = False, backend=''):
         my_size = 1
         my_local_rank = 0
         my_local_size = 1
+    # What does this Request class do?
     myreq = Request()
 
 class Request(object):
@@ -373,6 +381,7 @@ class All2AllInfo(object):
     pass
 
 def alltoall(inputs, per_rank_split_lengths):
+    # print("start alltoall!!!!")
     global myreq
     N, E = inputs[0].size()
     a2ai = All2AllInfo()
@@ -384,7 +393,7 @@ def alltoall(inputs, per_rank_split_lengths):
     a2ai.S = sum(per_rank_split_lengths) if per_rank_split_lengths else a2ai.lS * my_size
 
     if a2a_impl == '' and alltoall_supported or a2a_impl == 'alltoall':
-        #print("Using All2All_Req")
+        print("Using All2All_Req")
         output = All2All_Req.apply(a2ai, *inputs)
         myreq.WaitFunction = All2All_Wait
     elif a2a_impl == '' or a2a_impl == 'scatter':
