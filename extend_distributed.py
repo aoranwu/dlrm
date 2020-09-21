@@ -1,4 +1,5 @@
 import os
+import time
 import builtins
 import torch
 from torch.autograd import Function
@@ -201,13 +202,21 @@ class All2All_Scatter_Req(Function):
     def forward(ctx, a2ai, *inputs):
         global myreq
         #print("All2All_Scatter_Req:forward")
+        #my batch split lengths
         mb_split_lengths = a2ai.gNS if a2ai.gNS else a2ai.lN
         emb_split_lengths = a2ai.gSS if a2ai.gSS else [a2ai.lS] * my_size
+        # input: b*(d1+d2+...+dn) concat features from different emb tables
+        # merge the features from all embedding tables
+        # batch dim still retains
         input = torch.cat(inputs, dim=1)
+        # split along the batch dim, converted to a list
         scatter_list = list(input.split(mb_split_lengths, dim=0))
         gather_list = []
         req_list = []
+        # send scatter_list[i] to rank i
         for i in range(my_size):
+            if i==my_rank:
+                print(f"forward scatter in rank {my_rank} triggered at {time.time()}")
             out_tensor = input.new_empty([a2ai.lN, emb_split_lengths[i] * a2ai.E])
             req = dist.scatter(out_tensor, scatter_list if i == my_rank else [], src=i, async_op=True)
             gather_list.append(out_tensor)
@@ -224,6 +233,7 @@ class All2All_Scatter_Req(Function):
         #print("All2All_Scatter_Req:backward")
         for r in myreq.req:
             r.wait()
+        print(f"backward scatter in rank {my_rank} finishes at {time.time()}")
         myreq.req = None
         grad_input = myreq.tensor
         grad_inputs = grad_input.split(ctx.a2ai.E, dim=1)
@@ -239,6 +249,7 @@ class All2All_Scatter_Wait(Function):
         ctx.a2ai = myreq.a2ai
         for r in myreq.req:
             r.wait()
+        print(f"forward scatter in rank {my_rank} finishes at {time.time()}")
         myreq.req = None
         myreq.tensor = None
         return output
@@ -256,6 +267,8 @@ class All2All_Scatter_Wait(Function):
         gather_list = list(grad_input.split(mb_split_lengths, dim=0))
         req_list = []
         for i in range(my_size):
+            if i==my_rank:
+                print(f"backward scatter in rank {my_rank} triggered at {time.time()}")
             #req = dist.scatter(gather_list[i], scatter_list if i == my_rank else [], src=i, async_op=True)
             req = dist.gather(scatter_list[i], gather_list if i == my_rank else [], dst=i, async_op=True)
             req_list.append(req)
@@ -380,13 +393,32 @@ class AllGather(Function):
 class All2AllInfo(object):
     pass
 
+# input is the looking-up results on several embedding tables (which belongs to each rank), on
+# the whole batch of data
+# The goal is to scatter along the batch dimension
+# per_rank_lengths is a list recording which embeddings tables are on which machine
+# [len0, len1, len2, ..., lenn] where leni is the # of embedding tables on the ith rank
 def alltoall(inputs, per_rank_split_lengths):
     # print("start alltoall!!!!")
     global myreq
+    # inputs[0] is the result of the embedding table
+    # N is batchsize
+    # E is the feature dim
+   
+    # inputs: (embedding_table_num on this rank, batch_size, feature_dim)
+    
     N, E = inputs[0].size()
+    # print("inputs.size():",len(inputs)) #should be 3
+    # print("input[0].size():", inputs[0].size()) #should be (6,2)
+    # print(N==per_rank_split_lengths[my_rank])
     a2ai = All2AllInfo()
+    # a2ai.lS: # of embedding tables on this rank
+    # should == per_rank_split_lengths[my_rank]
     a2ai.lS = len(inputs)
+    # a2ai.gSS: list containing embedding table #s on each rank
     a2ai.gSS = per_rank_split_lengths
+    # a2ai.lN:split across the batch, lN is the # of samples on this rank
+    # a2ai.gNS: global batch split
     a2ai.lN, a2ai.gNS = get_split_lengths(N)
     a2ai.E = E
     a2ai.N = N
@@ -398,7 +430,10 @@ def alltoall(inputs, per_rank_split_lengths):
         myreq.WaitFunction = All2All_Wait
     elif a2a_impl == '' or a2a_impl == 'scatter':
         #print("Using All2All_Scatter_Req")
+        # alltoall req takes a2ai along with the ly inputs
+        # what does this output do
         output = All2All_Scatter_Req.apply(a2ai, *inputs)
+        # wait should return the new data split along the batch input[0] dim
         myreq.WaitFunction = All2All_Scatter_Wait
     elif a2a_impl == 'scatter_list':
         #print("Using All2All_ScatterList_Req")
@@ -406,6 +441,7 @@ def alltoall(inputs, per_rank_split_lengths):
         myreq.WaitFunction = All2All_ScatterList_Wait
     else:
         print("Unknown value set for DLRM_ALLTOALL_IMPL (%s), please use one of [alltoall, scatter, scatter_list]" % a2a_impl) 
+    # alltoall return a req object with the wait function
     return myreq
 
 def all_gather(input, lengths, dim=0):
@@ -425,7 +461,7 @@ def rank0_print(*args, **kwargs):
     if my_rank <= 0 or kwargs.get('print_all', False):
         orig_print(*args, **kwargs)
 
-builtins.print = rank0_print
+# builtins.print = rank0_print
 
 # Allow printing from all rank with explicit print_all
 def print_all(*args, **kwargs):

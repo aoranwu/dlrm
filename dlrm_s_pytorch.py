@@ -369,7 +369,9 @@ class DLRM_Net(nn.Module):
         if batch_size % ext_dist.my_size != 0:
             sys.exit("ERROR: batch_size %d can not split across %d ranks evenly" % (batch_size, ext_dist.my_size))
 
+        # get the data for this rank
         dense_x = dense_x[ext_dist.get_my_slice(batch_size)]
+
         lS_o = lS_o[self.local_emb_slice]
         lS_i = lS_i[self.local_emb_slice]
 
@@ -377,6 +379,7 @@ class DLRM_Net(nn.Module):
             sys.exit("ERROR: corrupted model input detected in distributed_forward call")
 
         # embeddings
+        # ly is the embedding lookup results
         ly = self.apply_emb(lS_o, lS_i, self.emb_l)
         # print("ly: ", ly)
         # debug prints
@@ -390,8 +393,14 @@ class DLRM_Net(nn.Module):
         if len(self.emb_l) != len(ly):
             sys.exit("ERROR: corrupted intermediate result in distributed_forward call")
 
+        # now on this machine we have for certain embedding tables all batch of data
+        # n_emb_per_rank is a list containing # of emb tables on each machine(rank)
+        # how this alltoall is implementd then?
+        # alltoall return a request
+        # the request.wait() return the result ly (has been exchanged with each other)
         a2a_req = ext_dist.alltoall(ly, self.n_emb_per_rank)
 
+        #self.bot_l has been wrapped up with DDP
         x = self.apply_mlp(dense_x, self.bot_l)
         # debug prints
         # print(x)
@@ -546,6 +555,7 @@ if __name__ == "__main__":
     )
     # model related parameters
     parser.add_argument("--arch-sparse-feature-size", type=int, default=2)
+    # embedding-size: 4 embedding tables, each with 3lines, each line has two dim
     parser.add_argument("--arch-embedding-size", type=str, default="4-3-2")
     # j will be replaced with the table number
     parser.add_argument("--arch-mlp-bot", type=str, default="4-3-2")

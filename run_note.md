@@ -41,3 +41,63 @@ loss_fn_wrap: put loss to proper divices dlrm:910
 main training loop: dlrm:1013
 
 Currently use All2All_Scatter_Req and All2All_Scatter_Wait to implement alltoall
+
+my_size is world_size
+
+get_my_slice(n): given a total number n (batch size for data parallel, # of embedding tables for model parallel), determine which slice to deal with based on my_rank
+
+get_split_length(n): return len of own slice and the whole splits (my_len, splits)
+
+
+RANK is the node rank(?) My rank is the global rank. get from dist.get_rank
+
+Why print only happens at the master machine
+
+Use of alltoall in distributed_forward()
+lS_o[i], lS_i[i] contains the whole batch of data for the ith embedding table
+
+All2All_Scatter_Req
+All2All_Scatter_Wait
+
+--arch-embedding-size: # of entries for each embedding tables  
+e.g. 4-4-3-5, four embedding tables in total, each have 4,4,3,5 entries in total
+
+--arch-sparse-feature-size: embedding table feature dim
+
+N: batch_size
+E: # of feature dims
+a2ai.lS= len(inputs) # of embedding tables
+a2ai.gSS: how these embedding tables are split across different ranks. It's a list of embedding table # on each rank
+a2ai.lN: local batch
+a2ai.gNS: global batch split, also a list
+inputs(ly): (embedding_table_num on this rank, batch_size, feature_dim)
+a2ai.S: total embedding table num
+a2ai.lS: local embedding table num
+
+lS_i: (embedding_table, batch)
+each lS_i[k] is the full batch for embedding table k
+use lS_o to split the batch
+eg: lS_i = {list: 3} [tensor([1, 0, 1]), tensor([0, 1]), tensor([1, 0])]
+lS_o = {Tensor: 3} tensor([[0, 1],\n        [0, 1],\n        [0, 1]])
+each offset in lS_o[k] specify a sample in embedding k
+lS_o[k] along with lS_i[k] specify the whole batch for embedding table k
+
+for ly: ly[k] is the result of whole batch for embedding table k 
+ly[k][0] is the result of the first sample of the batch for embedding table k
+
+torch.cat: remove one dim(list/tuple dim), then add along the given dim
+2*2 2*1 -> dim=1, 2*3 add along the given dim
+
+logging added at dist:218, 236, 252, 270
+
+DDP allreduce:
+torch.nn.parallel.distributed.py:527
+self.reducer.prepare_for_backward()
+
+
+process_group_->allreduce()
+/home/aoran/pytorch/torch/csrc/distributed/c10d/reducer.cpp:678
+
+/home/aoran/pytorch/torch/lib/c10d/ProcessGroupGloo.cpp
+
+/home/aoran/pytorch/third_party/gloo/gloo/allreduce.cc
