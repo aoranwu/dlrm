@@ -91,9 +91,9 @@ from tricks.md_embedding_bag import PrEmbeddingBag, md_solver
 
 import sklearn.metrics
 
-# from torchviz import make_dot
-# import torch.nn.functional as Functional
-# from torch.nn.parameter import Parameter
+from torchviz import make_dot
+import torch.nn.functional as Functional
+from torch.nn.parameter import Parameter
 
 exc = getattr(builtins, "IOError", "FileNotFoundError")
 
@@ -1059,7 +1059,7 @@ if __name__ == "__main__":
                     # (where we do not accumulate gradients across mini-batches)
                     optimizer.zero_grad()
                     # backward pass
-                    E.backward()
+                    E.backward(retain_graph=True)
                     # debug prints (check gradient norm)
                     # for l in mlp.layers:
                     #     if hasattr(l, 'weight'):
@@ -1306,15 +1306,15 @@ if __name__ == "__main__":
 
     # plot compute graph
     if args.plot_compute_graph:
-        sys.exit(
-            "ERROR: Please install pytorchviz package in order to use the"
-            + " visualization. Then, uncomment its import above as well as"
-            + " three lines below and run the code again."
-        )
-        # os.makedirs(args.out_dir, exist_ok=True)
-        # V = Z.mean() if args.inference_only else E
-        # dot = make_dot(V, params=dict(dlrm.named_parameters()))
-        # dot.render('%s_graph' % file_prefix) # write .pdf file
+        # sys.exit(
+        #     "ERROR: Please install pytorchviz package in order to use the"
+        #     + " visualization. Then, uncomment its import above as well as"
+        #     + " three lines below and run the code again."
+        # )
+        os.makedirs(args.out_dir, exist_ok=True)
+        V = Z.mean() if args.inference_only else E
+        dot = make_dot(V, params=dict(dlrm.named_parameters()))
+        dot.render('%s_graph' % file_prefix) # write .pdf file
 
     # test prints
     if not args.inference_only and args.debug_mode:
