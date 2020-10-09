@@ -10,7 +10,7 @@ try:
 except ImportError as e:
     #print(e)
     torch_ccl = False
-
+torch.distributed.all_reduce
 my_rank = -1
 my_size = -1
 my_local_rank = -1
@@ -48,13 +48,15 @@ def init_distributed(rank = -1, size = -1, use_gpu = False, backend=''):
     global my_local_size
     global a2a_impl
     global alltoall_supported
-
+    
     # guess MPI ranks from env (works for IMPI, OMPI and MVAPICH2)
     num_mpi_ranks = env2int(['PMI_SIZE', 'OMPI_COMM_WORLD_SIZE', 'MV2_COMM_WORLD_SIZE', 'WORLD_SIZE'])
+    # print(dist.is_nccl_available())
     if backend == '' and num_mpi_ranks > 1:
         if torch_ccl and env2int(['CCL_WORKER_COUNT']) > 0:
             backend = 'ccl'
         elif use_gpu and dist.is_nccl_available():
+            
             backend = 'nccl'
         elif dist.is_mpi_available():
             backend = 'mpi'
@@ -77,7 +79,7 @@ def init_distributed(rank = -1, size = -1, use_gpu = False, backend=''):
                 print("Warning: Looks like distributed multinode run but MASTER_ADDR env not set, using '127.0.0.1' as default")
                 print("If this run hangs, try exporting rank 0's hostname as MASTER_ADDR")
             os.environ['MASTER_ADDR'] = '127.0.0.1'
-
+    
     if size > 1:
         my_local_rank = env2int(['MPI_LOCALRANKID', 'OMPI_COMM_WORLD_LOCAL_RANK', 'MV2_COMM_WORLD_LOCAL_RANK'], 0)
         my_local_size = env2int(['MPI_LOCALNRANKS', 'OMPI_COMM_WORLD_LOCAL_SIZE', 'MV2_COMM_WORLD_LOCAL_SIZE'], 1)
@@ -86,33 +88,48 @@ def init_distributed(rank = -1, size = -1, use_gpu = False, backend=''):
                 print("Not sufficient GPUs available... local_size = %d, ngpus = %d" % (ext_dist.my_local_size, ngpus))
                 sys.exit(1)
             torch.cuda.set_device(my_local_rank)
+        # print(backend,flush=True)
+        # print(size, flush=True)
+        print(f"rank={rank}, pid={os.getpid()}", flush=True)
+        # backend="gloo"
+        
         dist.init_process_group(backend, rank=rank, world_size=size)
+        
+        print("here---------------------")
+        
         my_rank = dist.get_rank()
         my_size = dist.get_world_size()
         if my_rank == 0: print("Running on %d ranks using %s backend" % (my_size, backend))
+        
         if hasattr(dist, 'all_to_all_single'):
             try:
                 t = torch.zeros([4])
                 if use_gpu:
                     t = t.cuda()
-                dist.all_to_all_single(t, t)
-
+                   
+                # dist.all_to_all_single(t, t)
+                
                 alltoall_supported = True
             except RuntimeError:
                 # print("have all_to_all_single")
                 pass
+         
+        
         # print(a2a_impl+"++++++++")
         # print(alltoall_supported)
         if a2a_impl == 'alltoall' and alltoall_supported == False:
             print("Requested DLRM_ALLTOALL_IMPL=%s but backend %s does not support it, use scatter/gather based alltoall" % (a2a_impl, backend))
             a2a_impl = 'scatter'
         if a2a_impl != '': print("Using DLRM_ALLTOALL_IMPL=%s" % a2a_impl)
+        
     else:
         my_rank = 0
         my_size = 1
         my_local_rank = 0
         my_local_size = 1
+    
     myreq = Request()
+    
 
 class Request(object):
     def __init__(self):
@@ -206,7 +223,7 @@ class All2All_Scatter_Req(Function):
         req_list = []
         for i in range(my_size):
             if i==my_rank:
-                print(f"forward scatter in rank {my_rank} triggered at {time.time()}")
+                print(f"forward scatter in rank {my_rank} triggered at {(time.time()*(10**9)):.0f}")
 
             out_tensor = input.new_empty([a2ai.lN, emb_split_lengths[i] * a2ai.E])
             req = dist.scatter(out_tensor, scatter_list if i == my_rank else [], src=i, async_op=True)
@@ -224,7 +241,7 @@ class All2All_Scatter_Req(Function):
         #print("All2All_Scatter_Req:backward")
         for r in myreq.req:
             r.wait()
-        print(f"backward scatter in rank {my_rank} finishes at {time.time()}")
+        print(f"backward scatter in rank {my_rank} finishes at {(time.time()*(10**9)):.0f}")
         myreq.req = None
         grad_input = myreq.tensor
         grad_inputs = grad_input.split(ctx.a2ai.E, dim=1)
@@ -240,7 +257,7 @@ class All2All_Scatter_Wait(Function):
         ctx.a2ai = myreq.a2ai
         for r in myreq.req:
             r.wait()
-        print(f"forward scatter in rank {my_rank} finishes at {time.time()}")
+        print(f"forward scatter in rank {my_rank} finishes at {(time.time()*(10**9)):.0f}")
         myreq.req = None
         myreq.tensor = None
         return output
@@ -259,7 +276,7 @@ class All2All_Scatter_Wait(Function):
         req_list = []
         for i in range(my_size):
             if i==my_rank:
-                print(f"backward scatter in rank {my_rank} triggered at {time.time()}")
+                print(f"backward scatter in rank {my_rank} triggered at {(time.time()*(10**9)):.0f}")
             #req = dist.scatter(gather_list[i], scatter_list if i == my_rank else [], src=i, async_op=True)
             req = dist.gather(scatter_list[i], gather_list if i == my_rank else [], dst=i, async_op=True)
             req_list.append(req)
@@ -279,6 +296,7 @@ class All2All_Req(Function):
         if emb_split_lengths: emb_split_lengths = [a2ai.lN * e * a2ai.E for e in emb_split_lengths]
         input = torch.cat(inputs, dim=1).view([-1])
         output = input.new_empty([a2ai.S*a2ai.lN*a2ai.E])
+        print(f"forward alltoall in rank {my_rank} started at {(time.time()*(10**9)):.0f}")
         req = dist.all_to_all_single(output, input, emb_split_lengths, mb_split_lengths, async_op=True)
 
         myreq.req = req
@@ -297,6 +315,7 @@ class All2All_Req(Function):
         #print("All2All_Req:backward")
         a2ai = ctx.a2ai
         myreq.req.wait()
+        print(f"backward alltoall in rank {my_rank} finished at {(time.time()*(10**9)):.0f}")
         myreq.req = None
         grad_input = myreq.tensor
         grad_inputs = grad_input.view([a2ai.N, -1]).split(a2ai.E, dim=1)
@@ -313,6 +332,7 @@ class All2All_Wait(Function):
         a2ai = myreq.a2ai
         ctx.a2ai = a2ai
         myreq.req.wait()
+        print(f"forward alltoall in rank {my_rank} finished at {(time.time()*(10**9)):.0f}")
         myreq.req = None
         myreq.tensor = None
         emb_split_lengths = a2ai.emb_split_lengths if a2ai.emb_split_lengths else a2ai.lS * a2ai.lN * a2ai.E
@@ -329,6 +349,7 @@ class All2All_Wait(Function):
         grad_output = torch.cat(grad_outputs)
         grad_input = grad_output.new_empty([a2ai.N * a2ai.lS * a2ai.E])
         req = dist.all_to_all_single(grad_input, grad_output, a2ai.mb_split_lengths, a2ai.emb_split_lengths, async_op=True)
+        print(f"backward alltoall in rank {my_rank} started at {(time.time()*(10**9)):.0f}")
         myreq.req = req
         myreq.tensor = grad_input
         return (grad_output,)
@@ -385,7 +406,6 @@ class All2AllInfo(object):
     pass
 
 def alltoall(inputs, per_rank_split_lengths):
-    # print("start alltoall!!!!")
     global myreq
     N, E = inputs[0].size()
     a2ai = All2AllInfo()
@@ -395,15 +415,10 @@ def alltoall(inputs, per_rank_split_lengths):
     a2ai.E = E
     a2ai.N = N
     a2ai.S = sum(per_rank_split_lengths) if per_rank_split_lengths else a2ai.lS * my_size
-    # print("a2aimpl"+a2a_impl+"++++++++++++++++")
-    # print(alltoall_supported)
-    # print(a2a_impl)
     if a2a_impl == '' and alltoall_supported or a2a_impl == 'alltoall':
-        # print("Using All2All_Req")
         output = All2All_Req.apply(a2ai, *inputs)
         myreq.WaitFunction = All2All_Wait
     elif a2a_impl == '' or a2a_impl == 'scatter':
-        # print("Using All2All_Scatter_Req")
         output = All2All_Scatter_Req.apply(a2ai, *inputs)
         myreq.WaitFunction = All2All_Scatter_Wait
     elif a2a_impl == 'scatter_list':
@@ -415,7 +430,6 @@ def alltoall(inputs, per_rank_split_lengths):
     return myreq
 
 def all_gather(input, lengths, dim=0):
-    #print("lengths: ", lengths)
     if not lengths: lengths = [input.size(0)] * my_size
     return AllGather.apply(input, lengths, dim)
 
@@ -431,7 +445,7 @@ def rank0_print(*args, **kwargs):
     if my_rank <= 0 or kwargs.get('print_all', False):
         orig_print(*args, **kwargs)
 
-# builtins.print = rank0_print
+builtins.print = rank0_print
 
 # Allow printing from all rank with explicit print_all
 def print_all(*args, **kwargs):
